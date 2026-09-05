@@ -5,7 +5,8 @@ objaví nový voľný termín v sledovanom mesiaci, ktorý:
 - začína o 16:00 alebo neskôr, alebo
 - pripadá na sobotu/nedeľu.
 
-Beží automaticky každú hodinu cez GitHub Actions (`.github/workflows/watch.yml`).
+Beží automaticky každých 10 minút cez GitHub Actions (`.github/workflows/watch.yml`).
+GitHub môže naplánované spustenia oneskoriť pri zaťažení — reálny interval býva dlhší.
 
 ## Nastavenie
 
