@@ -7,6 +7,7 @@ Sends an email notification via Gmail SMTP when new matching slots appear.
 import json
 import os
 import smtplib
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -160,6 +161,46 @@ def save_state(slot_keys: set[str]):
     STATE_FILE.write_text(json.dumps({"known_slot_keys": sorted(slot_keys)}, indent=2))
 
 
+def commit_state():
+    """Persist state.json to git immediately, so a mid-run crash doesn't
+    lose scan progress (previously this only happened once, after the
+    whole ~6h job finished)."""
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", str(STATE_FILE)],
+            cwd=STATE_FILE.parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if not status.stdout.strip():
+            return
+        subprocess.run(
+            ["git", "config", "user.name", "kuzelka-watcher-bot"],
+            cwd=STATE_FILE.parent,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "actions@users.noreply.github.com"],
+            cwd=STATE_FILE.parent,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "add", str(STATE_FILE)], cwd=STATE_FILE.parent, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Update known terminy state [skip ci]"],
+            cwd=STATE_FILE.parent,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "pull", "--rebase"], cwd=STATE_FILE.parent, check=True
+        )
+        subprocess.run(["git", "push"], cwd=STATE_FILE.parent, check=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"Failed to persist state.json to git: {exc}", file=sys.stderr)
+
+
 def send_email(new_slots: list[FreeSlot]):
     lines = [
         f"- {s.date} ({WEEKDAY_NAMES_SK[parse_date(s.date).weekday()]}) {s.start}-{s.end}"
@@ -224,6 +265,7 @@ def main():
                     if notification_succeeded:
                         previous_keys = matching_keys
                         save_state(previous_keys)
+                        commit_state()
                 except (PlaywrightError, RuntimeError, ValueError) as exc:
                     print(f"Scan {scan_number} failed: {exc}", file=sys.stderr)
 
