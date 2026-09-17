@@ -5,6 +5,11 @@ objaví nový voľný termín v sledovanom mesiaci, ktorý:
 - začína o 16:00 alebo neskôr, alebo
 - pripadá na sobotu/nedeľu.
 
+Do logu GitHub Actions sa pri každom skene vypíšu **všetky** nájdené voľné
+termíny (nielen tie, čo spĺňajú kritérium) — riadky spĺňajúce kritérium sú
+označené `*`. Vďaka tomu vieš z logu overiť, že watcher reálne vidí kalendár,
+aj keď žiadny z aktuálnych termínov nie je ten, čo ti vyhovuje.
+
 GitHub Actions spustí watcher približne každých 6 hodín
 (`.github/workflows/watch.yml`). Každý job potom drží prihlásený prehliadač
 takmer 6 hodín a kalendár kontroluje každých 30 sekúnd. GitHub môže začiatok
