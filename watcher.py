@@ -82,9 +82,10 @@ def login(page):
     page.locator("#login").fill(USERNAME)
     page.locator("#password").fill(PASSWORD)
     page.locator("#prihlasit").click()
-    page.wait_for_load_state("domcontentloaded")
-    if page.locator("#login").is_visible():
-        raise RuntimeError("Login failed: the login form is still visible")
+    # Wait for the post-login navigation to actually land, rather than
+    # racing "domcontentloaded" (which can still see the old login page's
+    # DOM right after the click, before the server-side redirect happens).
+    page.wait_for_selector("#login", state="detached", timeout=15000)
 
 
 def select_month(page, month_label: str):
@@ -95,7 +96,7 @@ def select_month(page, month_label: str):
     select = page.locator("#adminkalendar-obdobie")
     select.select_option(label=month_label)
     page.locator("#kalendar-hladat").click()
-    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_selector("td.kalendar-termin, #adminkalendar-obdobie", timeout=15000)
 
 
 def extract_free_slots(page) -> list[FreeSlot]:
@@ -227,12 +228,15 @@ def main():
         deadline = time.monotonic() + WATCH_DURATION_SECONDS
         scan_number = 0
 
+        logged_in = False
         try:
-            login(page)
             while time.monotonic() < deadline:
                 scan_number += 1
                 scan_started = time.monotonic()
                 try:
+                    if not logged_in:
+                        login(page)
+                        logged_in = True
                     select_month(page, TARGET_MONTH_LABEL)
                     all_free_slots = extract_free_slots(page)
                     matching_slots = [
@@ -268,6 +272,7 @@ def main():
                         commit_state()
                 except (PlaywrightError, RuntimeError, ValueError) as exc:
                     print(f"Scan {scan_number} failed: {exc}", file=sys.stderr)
+                    logged_in = False
 
                 remaining = deadline - time.monotonic()
                 sleep_for = min(
