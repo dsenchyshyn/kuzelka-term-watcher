@@ -8,11 +8,13 @@ import json
 import os
 import smtplib
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from email.mime.text import MIMEText
 from pathlib import Path
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 LOGIN_URL = "https://planovac.kuzelka.sk/"
@@ -27,6 +29,11 @@ PASSWORD = os.environ["KUZELKA_PASSWORD"]
 # (value "1" = next month, "2" = current month, etc. per observed markup),
 # but the safest approach is to match by visible month label text.
 TARGET_MONTH_LABEL = os.environ.get("KUZELKA_TARGET_MONTH", "september 2026")
+POLL_INTERVAL_SECONDS = int(os.environ.get("KUZELKA_POLL_INTERVAL_SECONDS", "30"))
+# Leave a safety margin below GitHub Actions' six-hour job limit for setup.
+WATCH_DURATION_SECONDS = int(
+    os.environ.get("KUZELKA_WATCH_DURATION_SECONDS", str(5 * 60 * 60 + 50 * 60))
+)
 
 MIN_START_HOUR_MINUTE = (16, 0)  # inclusive: 16:00 counts
 WEEKEND_WEEKDAYS = {5, 6}  # Saturday=5, Sunday=6 (Python weekday())
@@ -70,20 +77,24 @@ def slot_matches_criteria(slot: FreeSlot) -> bool:
 
 
 def login(page):
-    page.goto(LOGIN_URL)
+    page.goto(LOGIN_URL, wait_until="domcontentloaded")
     page.locator("#login").fill(USERNAME)
     page.locator("#password").fill(PASSWORD)
     page.locator("#prihlasit").click()
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("domcontentloaded")
+    if page.locator("#login").is_visible():
+        raise RuntimeError("Login failed: the login form is still visible")
 
 
 def select_month(page, month_label: str):
-    page.goto(CALENDAR_URL)
-    page.wait_for_load_state("networkidle")
+    page.goto(CALENDAR_URL, wait_until="domcontentloaded")
+    if page.locator("#login").is_visible():
+        login(page)
+        page.goto(CALENDAR_URL, wait_until="domcontentloaded")
     select = page.locator("#adminkalendar-obdobie")
     select.select_option(label=month_label)
     page.locator("#kalendar-hladat").click()
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("domcontentloaded")
 
 
 def extract_free_slots(page) -> list[FreeSlot]:
@@ -171,27 +182,60 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
-        login(page)
-        select_month(page, TARGET_MONTH_LABEL)
-        all_free_slots = extract_free_slots(page)
-        browser.close()
+        previous_keys = load_previous_state()
+        deadline = time.monotonic() + WATCH_DURATION_SECONDS
+        scan_number = 0
 
-    matching_slots = [s for s in all_free_slots if slot_matches_criteria(s)]
-    matching_keys = {s.key() for s in matching_slots}
+        try:
+            login(page)
+            while time.monotonic() < deadline:
+                scan_number += 1
+                scan_started = time.monotonic()
+                try:
+                    select_month(page, TARGET_MONTH_LABEL)
+                    all_free_slots = extract_free_slots(page)
+                    matching_slots = [
+                        s for s in all_free_slots if slot_matches_criteria(s)
+                    ]
+                    matching_keys = {s.key() for s in matching_slots}
+                    new_keys = matching_keys - previous_keys
+                    new_slots = [s for s in matching_slots if s.key() in new_keys]
 
-    previous_keys = load_previous_state()
-    new_keys = matching_keys - previous_keys
-    new_slots = [s for s in matching_slots if s.key() in new_keys]
+                    print(
+                        f"Scan {scan_number}: total={len(all_free_slots)}, "
+                        f"matching={len(matching_slots)}, new={len(new_slots)}"
+                    )
 
-    print(f"Total free slots found: {len(all_free_slots)}")
-    print(f"Matching criteria (>=16:00 or weekend): {len(matching_slots)}")
-    print(f"New since last run: {len(new_slots)}")
+                    notification_succeeded = True
+                    if new_slots:
+                        try:
+                            send_email(new_slots)
+                        except (OSError, smtplib.SMTPException) as exc:
+                            print(
+                                f"Notification email failed: {exc}",
+                                file=sys.stderr,
+                            )
+                            notification_succeeded = False
+                        else:
+                            print("Notification email sent.")
 
-    if new_slots:
-        send_email(new_slots)
-        print("Notification email sent.")
+                    # Track the current page, not all slots ever seen. This makes
+                    # a slot notify again if it disappears and later reappears.
+                    if notification_succeeded:
+                        previous_keys = matching_keys
+                        save_state(previous_keys)
+                except (PlaywrightError, RuntimeError, ValueError) as exc:
+                    print(f"Scan {scan_number} failed: {exc}", file=sys.stderr)
 
-    save_state(matching_keys)
+                remaining = deadline - time.monotonic()
+                sleep_for = min(
+                    POLL_INTERVAL_SECONDS - (time.monotonic() - scan_started),
+                    remaining,
+                )
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+        finally:
+            browser.close()
 
 
 if __name__ == "__main__":

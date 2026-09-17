@@ -2,7 +2,9 @@ name: Watch Kuzelka terminy
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    # GitHub may delay scheduled workflows. The job itself watches continuously
+    # for almost six hours, so it does not depend on precise cron delivery.
+    - cron: "0 */6 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -15,6 +17,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
 
@@ -32,12 +35,14 @@ jobs:
           KUZELKA_USERNAME: ${{ secrets.KUZELKA_USERNAME }}
           KUZELKA_PASSWORD: ${{ secrets.KUZELKA_PASSWORD }}
           KUZELKA_TARGET_MONTH: ${{ vars.KUZELKA_TARGET_MONTH || 'september 2026' }}
+          KUZELKA_POLL_INTERVAL_SECONDS: ${{ vars.KUZELKA_POLL_INTERVAL_SECONDS || '30' }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NOTIFY_TO: ${{ secrets.NOTIFY_TO }}
         run: python3 watcher.py
 
       - name: Persist state
+        if: always()
         run: |
           if [ -n "$(git status --porcelain state.json)" ]; then
             git config user.name "kuzelka-watcher-bot"
