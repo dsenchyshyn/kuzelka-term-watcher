@@ -256,7 +256,7 @@ def main():
                     if all_free_slots:
                         for s in sorted(all_free_slots, key=lambda s: (s.date, s.start)):
                             marker = "*" if s.key() in matching_keys else " "
-                            print(f"  [{marker}] {s.key()}")
+                            print(f"FREE_SLOT [{marker}] {s.date} {s.start}-{s.end}")
                     else:
                         print("  (no free slots found)")
 
