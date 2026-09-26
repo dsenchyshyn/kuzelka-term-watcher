@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 Monitors https://planovac.kuzelka.sk/ for free driving-lesson slots (terminy)
-in a given month that either start at/after 16:00 or fall on a weekend.
-Sends an email notification via Gmail SMTP when new matching slots appear.
+in the watched months (current + next by default). Every scan logs *all*
+free slots found per month (marked with `*` when they match the
+notification criteria), so the Actions log lets you confirm the watcher is
+actually seeing the calendar even when none of the current slots are ones
+you want. Only slots that either start at/after 16:00 or fall on a weekend
+trigger an email notification via Gmail SMTP.
 """
 import json
 import os
@@ -320,6 +324,12 @@ def main():
                             f"Scan {scan_number} [{month}]: total={len(all_free_slots)}, "
                             f"matching={len(matching_slots)}, new={len(new_slots)}"
                         )
+                        if all_free_slots:
+                            for s in sorted(all_free_slots, key=lambda s: (s.date, s.start)):
+                                marker = "*" if s.key() in matching_keys else " "
+                                print(f"FREE_SLOT [{marker}] {s.date} {s.start}-{s.end}")
+                        else:
+                            print("  (no free slots found)")
 
                         scanned_keys_by_month[month] = matching_keys
                         all_new_slots.extend(new_slots)

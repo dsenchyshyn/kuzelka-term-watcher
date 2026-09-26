@@ -13,6 +13,12 @@ id="adminkalendar-obdobie">` podľa jeho popisku (obsahuje vopred široký
 rozsah mesiacov dopredu aj dozadu) a potvrdzuje kliknutím na „Hľadať“ - bez
 potreby klikať na šípky „<<<“/„>>>“.
 
+Do logu GitHub Actions sa pri každom skene (za každý sledovaný mesiac) vypíšu
+**všetky** nájdené voľné termíny (nielen tie, čo spĺňajú kritérium) — riadky
+spĺňajúce kritérium sú označené `*`. Vďaka tomu vieš z logu overiť, že watcher
+reálne vidí kalendár, aj keď žiadny z aktuálnych termínov nie je ten, čo ti
+vyhovuje.
+
 GitHub Actions spustí watcher približne každých 6 hodín
 (`.github/workflows/watch.yml`). Každý job potom drží prihlásený prehliadač
 takmer 6 hodín a v rámci každej kontroly prejde postupne oba sledované
