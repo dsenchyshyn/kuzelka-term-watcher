@@ -25,11 +25,35 @@ STATE_FILE = Path(__file__).parent / "state.json"
 USERNAME = os.environ["KUZELKA_USERNAME"]
 PASSWORD = os.environ["KUZELKA_PASSWORD"]
 
-# Month(s) to watch, as they appear in the "adminkalendar-obdobie" <select>.
-# The site lists months as option values counting forward from "current" - 1
-# (value "1" = next month, "2" = current month, etc. per observed markup),
-# but the safest approach is to match by visible month label text.
-TARGET_MONTH_LABEL = os.environ.get("KUZELKA_TARGET_MONTH", "september 2026")
+# Month(s) to watch, as they appear in the "adminkalendar-obdobie" <select>
+# (label text, e.g. "september 2026" or "október 2026" - note the diacritics
+# on some month names). The <select> already lists a wide range of months
+# (both past and future) at all times, so picking one by label via
+# select_option() works directly - no need to click the "<<<"/">>>" arrow
+# buttons that shift its "selected" option by one (they exist for manual use
+# on the site, calling nastavmesiac() via onclick, but are redundant here).
+#
+# By default we watch the current calendar month plus the next one,
+# recomputed on every scan so the window slides forward automatically as
+# time passes (e.g. it moves from "september 2026" + "október 2026" to
+# "október 2026" + "november 2026" right after the month rolls over, with no
+# manual reconfiguration). KUZELKA_TARGET_MONTHS overrides this with an
+# explicit comma-separated list of labels, e.g. "september 2026,október 2026".
+SK_MONTH_NAMES = [
+    "január",
+    "február",
+    "marec",
+    "apríl",
+    "máj",
+    "jún",
+    "júl",
+    "august",
+    "september",
+    "október",
+    "november",
+    "december",
+]
+_TARGET_MONTHS_OVERRIDE = os.environ.get("KUZELKA_TARGET_MONTHS")
 POLL_INTERVAL_SECONDS = int(os.environ.get("KUZELKA_POLL_INTERVAL_SECONDS", "30"))
 # Leave a safety margin below GitHub Actions' six-hour job limit for setup.
 WATCH_DURATION_SECONDS = int(
@@ -67,6 +91,25 @@ class FreeSlot:
 def parse_date(date_str: str) -> datetime:
     day, month, year = date_str.split(".")
     return datetime(int(year), int(month), int(day))
+
+
+def month_label(year: int, month: int) -> str:
+    return f"{SK_MONTH_NAMES[month - 1]} {year}"
+
+
+def next_month(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+def target_month_labels(now: datetime | None = None) -> list[str]:
+    """Current month + next month's label, recomputed from the given (or
+    current) date so the watched window slides forward on its own."""
+    if _TARGET_MONTHS_OVERRIDE:
+        return [m.strip() for m in _TARGET_MONTHS_OVERRIDE.split(",") if m.strip()]
+    now = now or datetime.now()
+    current = month_label(now.year, now.month)
+    nxt = month_label(*next_month(now.year, now.month))
+    return [current, nxt]
 
 
 def slot_matches_criteria(slot: FreeSlot) -> bool:
@@ -151,15 +194,34 @@ def find_cell_date(cell) -> str | None:
     return match.group(0) if match else None
 
 
-def load_previous_state() -> set[str]:
+def load_previous_state() -> dict[str, set[str]]:
+    """Returns known slot keys per watched month label. Transparently
+    migrates the old single-month {"known_slot_keys": [...]} format (from
+    before multi-month support) into the new per-month shape."""
     if not STATE_FILE.exists():
-        return set()
+        return {}
     data = json.loads(STATE_FILE.read_text())
-    return set(data.get("known_slot_keys", []))
+    if "known_slot_keys" in data:
+        # Old flat format: attribute it to whatever was the sole target
+        # month at the time (no month field was stored), so re-attach it to
+        # the current target list's first label as a best-effort migration.
+        labels = target_month_labels()
+        return {labels[0]: set(data.get("known_slot_keys", []))} if labels else {}
+    by_month = data.get("known_slot_keys_by_month", {})
+    return {month: set(keys) for month, keys in by_month.items()}
 
 
-def save_state(slot_keys: set[str]):
-    STATE_FILE.write_text(json.dumps({"known_slot_keys": sorted(slot_keys)}, indent=2))
+def save_state(known_by_month: dict[str, set[str]]):
+    STATE_FILE.write_text(
+        json.dumps(
+            {
+                "known_slot_keys_by_month": {
+                    month: sorted(keys) for month, keys in known_by_month.items()
+                }
+            },
+            indent=2,
+        )
+    )
 
 
 def commit_state():
@@ -224,7 +286,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
-        previous_keys = load_previous_state()
+        known_by_month = load_previous_state()
         deadline = time.monotonic() + WATCH_DURATION_SECONDS
         scan_number = 0
 
@@ -233,28 +295,39 @@ def main():
             while time.monotonic() < deadline:
                 scan_number += 1
                 scan_started = time.monotonic()
+                # Recomputed every scan so the watched window slides forward
+                # on its own when the current month rolls over mid-run.
+                months = target_month_labels()
                 try:
                     if not logged_in:
                         login(page)
                         logged_in = True
-                    select_month(page, TARGET_MONTH_LABEL)
-                    all_free_slots = extract_free_slots(page)
-                    matching_slots = [
-                        s for s in all_free_slots if slot_matches_criteria(s)
-                    ]
-                    matching_keys = {s.key() for s in matching_slots}
-                    new_keys = matching_keys - previous_keys
-                    new_slots = [s for s in matching_slots if s.key() in new_keys]
 
-                    print(
-                        f"Scan {scan_number}: total={len(all_free_slots)}, "
-                        f"matching={len(matching_slots)}, new={len(new_slots)}"
-                    )
+                    all_new_slots: list[FreeSlot] = []
+                    scanned_keys_by_month: dict[str, set[str]] = {}
+                    for month in months:
+                        select_month(page, month)
+                        all_free_slots = extract_free_slots(page)
+                        matching_slots = [
+                            s for s in all_free_slots if slot_matches_criteria(s)
+                        ]
+                        matching_keys = {s.key() for s in matching_slots}
+                        previous_keys = known_by_month.get(month, set())
+                        new_keys = matching_keys - previous_keys
+                        new_slots = [s for s in matching_slots if s.key() in new_keys]
+
+                        print(
+                            f"Scan {scan_number} [{month}]: total={len(all_free_slots)}, "
+                            f"matching={len(matching_slots)}, new={len(new_slots)}"
+                        )
+
+                        scanned_keys_by_month[month] = matching_keys
+                        all_new_slots.extend(new_slots)
 
                     notification_succeeded = True
-                    if new_slots:
+                    if all_new_slots:
                         try:
-                            send_email(new_slots)
+                            send_email(all_new_slots)
                         except (OSError, smtplib.SMTPException) as exc:
                             print(
                                 f"Notification email failed: {exc}",
@@ -264,11 +337,13 @@ def main():
                         else:
                             print("Notification email sent.")
 
-                    # Track the current page, not all slots ever seen. This makes
-                    # a slot notify again if it disappears and later reappears.
+                    # Track the current page per month, not all slots ever
+                    # seen. This makes a slot notify again if it disappears
+                    # and later reappears. Months no longer in the watched
+                    # window (e.g. after a month rollover) are dropped.
                     if notification_succeeded:
-                        previous_keys = matching_keys
-                        save_state(previous_keys)
+                        known_by_month = scanned_keys_by_month
+                        save_state(known_by_month)
                         commit_state()
                 except (PlaywrightError, RuntimeError, ValueError) as exc:
                     print(f"Scan {scan_number} failed: {exc}", file=sys.stderr)

@@ -34,7 +34,7 @@ jobs:
         env:
           KUZELKA_USERNAME: ${{ secrets.KUZELKA_USERNAME }}
           KUZELKA_PASSWORD: ${{ secrets.KUZELKA_PASSWORD }}
-          KUZELKA_TARGET_MONTH: ${{ vars.KUZELKA_TARGET_MONTH || 'september 2026' }}
+          KUZELKA_TARGET_MONTHS: ${{ vars.KUZELKA_TARGET_MONTHS }}
           KUZELKA_POLL_INTERVAL_SECONDS: ${{ vars.KUZELKA_POLL_INTERVAL_SECONDS || '30' }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
