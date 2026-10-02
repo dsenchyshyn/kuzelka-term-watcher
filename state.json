@@ -1,6 +1,8 @@
 {
   "known_slot_keys_by_month": {
-    "okt\u00f3ber 2026": [],
+    "okt\u00f3ber 2026": [
+      "3.10.2026 10:30-12:00"
+    ],
     "november 2026": []
   }
 }
